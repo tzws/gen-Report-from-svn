@@ -1,0 +1,494 @@
+#!/usr/bin/php
+<?php
+
+
+class ProcessSVN
+{
+    protected $argc;
+    protected $argv;
+
+    protected $thisScipt;
+    protected $userName;
+
+    protected $users;
+    protected $output;
+
+    protected $skipExt = ['png', 'jpg', 'doc', 'docx', 'pdf', 'mp4', 'gif', 'swf' ];
+
+    protected $skipDirs = ['.', '..', 'Runtime', '.svn', '.git', 'images', 'ThinkPHP', 'lib'];
+    protected $workingDirs = ['Application', 'Public'];
+
+    protected $skipFiles = [];
+
+    protected $svnlog = '';
+    protected $doBlame = false;
+    protected $isUTF8 = true;
+    // protected $lang = 'en';
+    protected $lang = 'zh';
+    protected $command = '';
+
+    public function __construct($argc, $argv)
+    {
+        $this->argc = $argc;
+        $this->argv = $argv;
+    }
+
+    public function run()
+    {
+        $this->thisScipt = array_shift($this->argv);
+        // echo "\$this->thisScipt is: {$this->thisScipt}", PHP_EOL;
+
+        if($this->argc < 2)
+        {
+            $this->showUsage();
+            exit;
+        }
+
+        $command = array_shift($this->argv);
+
+        if($command != "week" && $command != "today")
+        {
+            echo "entered command is: $command\n";
+            $this->showUsage();
+            exit;
+        }
+
+        $this->command = $command;
+
+        $userName = array_shift($this->argv);
+
+        if($userName == "blame")
+        {
+            // $userName = "";
+            $this->doBlame = true;
+        }
+
+        if($this->argc == 4)
+        {
+            $this->doBlame = true;
+        }
+
+        switch($command) {
+        case 'week':
+            $this->week();
+            break;
+        case 'today':
+            $this->today();
+            break;
+        default:
+            break;
+        }
+
+        if($this->argc == 2)
+        {
+            // print_r($this->output);
+            $this->printOutput();
+        } elseif ($this->argc == 3 && $userName == "blame") {
+
+            $this->printOutput();
+        } else {
+            if(array_key_exists($userName, $this->users))
+            {
+                // print_r($this->output[$userName]);
+                $this->printOutput($userName);
+            } else {
+                fwrite(STDERR, "$userName does not exists in svn \n");
+            }
+        }
+    }
+
+    public function printOutput($userName = null)
+    {
+        foreach($this->output as $key => $val)
+        {
+            if(!empty($userName) )
+            {
+                if($key != $userName)
+                {
+                    continue;
+                }
+            }
+            if($this->command == "week")
+            {
+                $year = date('Y');
+                $week = date('W');
+                list($startDate, $endDate) = $this->getStartAndEndDate($year, $week);
+                if($this->lang == "zh")
+                {
+                    echo "$key 本周($startDate - $endDate)开发了:\n";
+                } else {
+                    echo "$key this week ($startDate - $endDate) has developped:\n";
+                }
+            } else {
+                if($this->lang == "zh")
+                {
+                    echo "$key: 本日(" . date("Y-m-d") . ")开发了：\n";
+                } else {
+                    echo "$key: today(" . date("Y-m-d") . ") has developped：\n";
+                }
+            }
+
+            $date = $val['date'];
+            foreach($date as $x => $y)
+            {
+                echo "$x:\n";
+                foreach($y as $index => $code)
+                {
+                    echo "\t{$code['revison']}: {$code['comment']}\n";
+                }
+            }
+
+            if($this->doBlame)
+            {
+                if($this->lang == "zh")
+                {
+                    echo "截至本日(" . date("Y-m-d") . ")共开发了 {$val['lines']} 行代码。\n";
+                } else {
+
+                    echo "till today(" . date("Y-m-d") . ") totally wrote {$val['lines']} lines of code.\n";
+                }
+            }
+
+            echo "\n\n";
+        }
+    }
+
+    public function showUsage()
+    {
+        $allPath = explode("/", $this->thisScipt);
+        echo "usage:\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} week\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} today\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} today username\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} week username\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} today username blame\n";
+        echo "/-path-to-/{$allPath[count($allPath ) - 1]} week username blame\n";
+    }
+
+    public function svnUpdate()
+    {
+        $reval = exec('svn cleanup');
+        $reval = exec('svn update');
+
+        // echo "\$reval is: $reval\n";
+    }
+
+    public function process ()
+    {
+        $this->svnUpdate();
+
+        // 取得 svn log
+        // $fileName = array_shift($this->argv);
+        // echo "\$fileName is: $fileName", PHP_EOL;
+        // $lines = file_get_contents($fileName);
+        // $lines = file($fileName);
+
+        $reval = exec("svn log ", $lines);
+        // print_r($lines);
+
+        if($this->isUTF8)
+        {
+            foreach($lines as $key => $line)
+            {
+                $line = iconv("GBK","UTF-8", $line);
+                $lines[$key] = $line;
+            }
+        }
+        // print_r($lines);
+
+        foreach($lines as $key => $line)
+        {
+            if(preg_match('/^r[0-9]+/', $line))
+            {
+                // echo $line;
+
+                $tokens = explode("|", $line);
+                $this->users[] = trim($tokens[1]);
+            }
+        }
+
+        $this->users = array_unique( array_flip($this->users));
+        // print_r($this->users);
+
+        foreach($this->users as $key => $val)
+        {
+            $this->users[$key] = array('date' => []);
+        }
+        // print_r($this->users);
+        // exit;
+        foreach($lines as $key => $line)
+        {
+            if(preg_match('/^r[0-9]+/', $line))
+            {
+                $tokens = explode("|", $line);
+                $userName = trim($tokens[1]);
+                // echo "\$userName is: $userName\n";
+                $date = trim($tokens[2]);
+                $date = explode(" ", $date);
+                $date = $date[0];
+                // echo "\$date is: $date\n";
+                // echo "{\$this->users[$userName]} is: {$this->users[$userName]} \n";
+                $this->users[$userName]['date'][] = $date;
+            } elseif ("" == trim($line)) {
+                // echo "empty line\n";
+            } else {
+
+            }
+        }
+
+        // print_r($this->users);
+
+        foreach($this->users as $key => $val)
+        {
+            // $this->users[$key]['date'] = array_unique(array_flip($val['date']));
+            $this->users[$key] = [
+                'date' => array_unique(array_flip($val['date'])),
+                'files' => [],
+                'lines' => 0
+            ];
+        }
+
+        // foreach($this->users as $x => $y)
+        // {
+        //     $this->users[$x] = [
+        //         'date' => $y['date'],
+        //         'files' => [],
+        //         'lines' => 0
+        //     ];
+        // }
+
+        // print_r($this->users);
+
+        foreach($this->users as $key => $val)
+        {
+            $tmp = $this->users[$key]['date'];
+
+            foreach($tmp as $x => $y)
+            {
+                $this->users[$key]['date'][$x] = array();
+            }
+        }
+        // print_r($this->users);
+        // exit;
+
+        $last_user = '';
+        $last_date = '';
+        $last_revison = '';
+        foreach($lines as $key => $line)
+        {
+            if(preg_match('/^r[0-9]+/', $line))
+            {
+                $tokens = explode("|", $line);
+
+                $revison = trim($tokens[0]);
+                $last_revison = $revison;
+
+                $userName = trim($tokens[1]);
+                $last_user = $userName;
+
+                $date = trim($tokens[2]);
+                $date = explode(" ", $date);
+                $date = $date[0];
+
+                $last_date = $date;
+
+                $this->users[$userName]['date'][$date][] = ['revison' => $revison, 'comment' => ''];
+            } elseif ("" == trim($line)) {
+                // echo "empty line\n";
+            } elseif (preg_match("/^-----+$/", $line)) {
+                // echo " $line\n";
+            } else {
+
+                $tmp = $this->users[$last_user]['date'][$last_date];
+                // print_r($tmp);
+                foreach($tmp as $x => $y )
+                {
+                    if($y['revison'] == $last_revison)
+                    {
+                        // $this->users[$last_user]['date'][$last_date][$x]['comment'] .= "\n" . trim($line);
+                        $this->users[$last_user]['date'][$last_date][$x]['comment'] .= trim($line);
+                    }
+                }
+
+            }
+        }
+        // print_r($this->users);
+        // exit;
+    }
+
+    public function week ()
+    {
+
+        $this->process();
+        $this->blame();
+
+        $year = date('Y');
+        $week = date('W');
+
+        // echo "\$year is: $year, week is: $week\n";
+
+        list($startDate, $endDate) = $this->getStartAndEndDate($year, $week);
+
+        // echo "\$startDate is: $startDate, and endDate is: $endDate\n";
+
+        foreach($this->users as $key => $val)
+        {
+            $this->output[$key] = array('date' => [], 'files' => $val['files'], 'lines' => $val['lines']);
+            $date = $val['date'];
+            foreach($date as $x => $y)
+            {
+                if( $startDate <= $x && $x <= $endDate)
+                {
+                    // echo "\$startDate is: $startDate, \$x is: $x, and endDate is: $endDate\n";
+                    $this->output[$key]['date'][$x] = $y;
+                }
+            }
+        }
+
+        // print_r($this->output);
+    }
+
+    public function today()
+    {
+        $this->process();
+        $this->blame();
+
+        $today = date('Y-m-d');
+
+        $this->output = array();
+        foreach($this->users as $key => $val)
+        {
+            $this->output[$key] = array('date' => [], 'files' => $val['files'], 'lines' => $val['lines']);
+            $date = $val['date'];
+            foreach($date as $x => $y)
+            {
+                if($x == $today)
+                {
+                    $this->output[$key]['date'][$x] = $y;
+                }
+            }
+        }
+
+        // print_r($this->output);
+
+    }
+
+    public function blame()
+    {
+        if(!$this->doBlame)
+            return;
+
+        // $results = $this->getDirContents("Public/Web/js");
+
+        $results = array();
+
+        foreach($this->workingDirs as $key => $val)
+        {
+            $tmp = $this->getDirContents($val);
+            $results = array_merge($results, $tmp);
+        }
+        // print_r($results);
+        // exit;
+
+        foreach($results as $key => $val)
+        {
+            if(in_array($val, $this->skipFiles))
+            {
+                continue;
+            }
+
+            if(!is_dir($val))
+            {
+                $ext = pathinfo($val, PATHINFO_EXTENSION);
+                // echo "$val's ext is: $ext\n";
+                if(!in_array($ext, $this->skipExt))
+                {
+                    // echo "$val not skip\n";
+                    $cmd = "svn blame -v $val";
+                    // fwrite(STDERR, "$cmd\n");
+                    // $reval = exec($cmd, $data);
+                    $data = array();
+                    $reval = exec($cmd, $data);
+                    // $data = passthru("svn blame $val");
+                    if(!preg_match('/^svn: warning/', $reval) )
+                    {
+                        // print_r($data);
+                        foreach($data as $a => $line)
+                        {
+                            $tokens = explode(" ", $line);
+                            // print_r($tokens);
+                            $ticker = 0;
+                            foreach($tokens as $x => $y)
+                            {
+
+                                $tmp = trim($y);
+                                if("" != $tmp)
+                                {
+                                    $ticker++;
+                                }
+
+                                if($ticker == 2)
+                                {
+                                    if(array_key_exists($tmp, $this->users))
+                                    {
+                                        $this->users[$tmp]['lines'] += 1;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        fwrite(STDERR, "$reval\n");
+                    }
+                } else {
+                    // echo "$val skip\n";
+                }
+            }
+        }
+
+        // print_r($this->users);
+    }
+
+    public function getDirContents($dir, &$results = array()){
+        $files = scandir($dir);
+
+        foreach($files as $key => $value){
+            // $path = realpath($dir.DIRECTORY_SEPARATOR.$value);
+            $path = $dir.DIRECTORY_SEPARATOR.$value;
+            if(!is_dir($path)) {
+                // echo "\$path is: $path\n";
+                $results[] = $path;
+            } else if(!in_array($value, $this->skipDirs)) {
+                $this->getDirContents($path, $results);
+                // print_r($results);
+                if(is_array($path))
+                {
+                    array_merge($results, $path);
+                } else {
+
+                    // $results[] = $path;
+                }
+            }
+        }
+
+        return $results;
+    }
+
+    function getStartAndEndDate($year, $week)
+    {
+        return [
+            (new DateTime())->setISODate($year, $week)->format('Y-m-d'), //start date
+            (new DateTime())->setISODate($year, $week, 7)->format('Y-m-d') //end date
+        ];
+    }
+}
+
+$svn = new ProcessSVN($argc, $argv);
+$svn->run();
+// $svn->process();
+// $svn->today();
+// $svn->week();
+// $svn->svnUpdate();
+// $svn->blame();
+
+?>
